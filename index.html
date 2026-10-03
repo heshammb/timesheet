@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Team Timesheet – Azure DevOps Time Log</title>
+<style>
+:root{--paper:#f4f6f8;--surface:#fff;--ink:#17222f;--muted:#5d6979;--line:#d7dce4;--accent:#2b5c8f;--accent-ink:#fff;--warn:#a8431a;--warn-soft:rgba(168,67,26,.12);--sub:#eef2f7;--wk:#f0f1f4}
+@media (prefers-color-scheme:dark){:root{--paper:#10151c;--surface:#17202a;--ink:#e5eaf0;--muted:#94a1b1;--line:#2a3542;--accent:#7eaedc;--accent-ink:#0c1520;--warn:#f0905e;--warn-soft:rgba(240,144,94,.16);--sub:#1d2733;--wk:#141b23}}
+*{box-sizing:border-box}
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums}
+main{max-width:1280px;margin:0 auto;padding:28px 20px 60px}
+h1{margin:0 0 4px;font-size:1.7rem}
+.sub{margin:0 0 20px;color:var(--muted)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:14px;align-items:end}
+@media (max-width:720px){.grid{grid-template-columns:1fr 1fr}.grid .full{grid-column:1/-1}}
+label{display:flex;flex-direction:column;gap:4px;font-size:.85rem;color:var(--muted)}
+input,textarea,button{font:inherit;color:inherit}
+input[type=date],input[type=password],textarea{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:100%}
+textarea{resize:vertical}
+button{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 14px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600;padding:9px 20px}
+button:disabled{opacity:.55;cursor:default}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.check{flex-direction:row;align-items:center;gap:6px}
+.hint{font-size:.8rem;color:var(--muted);margin:6px 0 0}
+.status{margin:10px 0;min-height:1.4em;color:var(--muted)}
+.status.err{color:var(--warn)}
+.wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+th,td{border:1px solid var(--line);padding:7px 9px;white-space:nowrap}
+thead th{background:var(--sub);font-weight:600;text-align:center}
+thead th small{display:block;font-weight:400;color:var(--muted)}
+td.user{font-weight:600;vertical-align:top;background:var(--surface)}
+td.h{text-align:center;min-width:58px}
+td.h.wk,th.wk{background-color:var(--wk)}
+td.h.over{background:var(--warn-soft);color:var(--warn);font-weight:700}
+td.tot{text-align:right;font-weight:700}
+tr.subtotal td{background:var(--sub);font-weight:700}
+td.wi small{display:block;color:var(--muted);white-space:normal;max-width:320px}
+td.none{color:var(--muted);font-style:italic}
+details summary{cursor:pointer;color:var(--muted);font-size:.9rem}
+.drop{display:block;margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:14px;text-align:center;color:var(--muted);cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+  <h1>Team Timesheet</h1>
+  <p class="sub">Hours logged in the Azure DevOps Time Log tab, per person, project, work item and day, across all projects.</p>
+
+  <div class="card">
+    <label>Your Azure DevOps personal access token
+      <input type="password" id="pat" autocomplete="off" placeholder="Paste your token">
+    </label>
+    <div class="row" style="margin-top:8px">
+      <label class="check"><input type="checkbox" id="remember"> Remember on this computer</label>
+    </div>
+    <p class="hint">Create one in Azure DevOps → User settings → Personal access tokens, with <b>Work Items: Read</b> and <b>Extension Data: Read</b>. The token stays in your browser and is only sent to dev.azure.com.</p>
+  </div>
+
+
+  <div class="card grid">
+    <label class="full">Names (one per line)
+      <textarea id="names" rows="3" placeholder="Abram Samuel&#10;AbdElRahman Ahmad"></textarea>
+    </label>
+    <label>From<input type="date" id="from"></label>
+    <label>To<input type="date" id="to"></label>
+    <div class="full"><button class="primary" id="go">Generate</button></div>
+  </div>
+
+  <p class="status" id="status"></p>
+  <div id="out"></div>
+  <div class="row" style="margin-top:10px"><button id="csv" hidden>Download CSV</button></div>
+
+  <div class="card" style="margin-top:24px">
+    <details>
+      <summary>No token? Use a saved file instead</summary>
+      <p class="hint">Sign in to Azure DevOps, open <a id="srcLink" target="_blank" rel="noopener">the Time Log data</a>, save the page (Ctrl/⌘+S), and choose the file below. Without a token, only work item numbers are shown (no project names).</p>
+      <label class="drop"><input type="file" id="file" hidden accept=".json,.txt,.html"><span id="fileText">Click to choose the saved file</span></label>
+    </details>
+  </div>
+</main>
+
+<script>
+const ORG = 'FawryFIS';
+const DATA_URL = `https://extmgmt.dev.azure.com/${ORG}/_apis/ExtensionManagement/InstalledExtensions/TimeLog/time-logging-extension/Data/Scopes/Default/Current/Collections/TimeLogData/Documents`;
+const WI_URL = `https://dev.azure.com/${ORG}/_apis/wit/workitemsbatch?api-version=7.1`;
+const $ = id => document.getElementById(id);
+$('srcLink').href = DATA_URL;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm = s => String(s ?? '').toLowerCase().replace(/\s+/g,' ').trim();
+const pad = n => String(n).padStart(2,'0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseDay = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y,m-1,d); };
+const fmt = h => h ? String(Math.round(h*100)/100) : '';
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const ls = { get:k=>{try{return localStorage.getItem(k)}catch(e){return null}}, set:(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}} };
+
+// defaults
+const today = new Date(), sun = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
+$('from').value = ymd(sun); $('to').value = ymd(new Date(sun.getFullYear(), sun.getMonth(), sun.getDate()+6));
+$('names').value = ls.get('ts-names') || '';
+
+let allLogs = null, wiCache = {}, lastRows = null, lastDays = null;
+const status = (t, err) => { $('status').textContent = t; $('status').classList.toggle('err', !!err); };
+if (ls.get('ts-pat')) { $('pat').value = ls.get('ts-pat'); $('remember').checked = true; }
+$('remember').addEventListener('change', () => ls.set('ts-pat', $('remember').checked ? $('pat').value : null));
+$('pat').addEventListener('input', () => { if ($('remember').checked) ls.set('ts-pat', $('pat').value); if (!fromFile) allLogs = null; });
+let fromFile = false, loadedAt = 0;
+const auth = () => ({ Authorization: 'Basic ' + btoa(':' + $('pat').value.trim()) });
+
+async function loadLogs(){
+  // reuse data for 10 minutes within the same session; always fresh after that
+  if (allLogs && (fromFile || Date.now() - loadedAt < 600000)) return allLogs;
+  if (!$('pat').value.trim()) throw new Error('Paste your personal access token first.');
+  status('Downloading the latest time log data from Azure DevOps (large, may take 10–40 seconds)…');
+  let r;
+  try { r = await fetch(DATA_URL, { headers: auth() }); }
+  catch(e) { throw new Error('The browser couldn’t reach Azure DevOps. Make sure this page is opened from its web address (not a file on your computer) and that you are online.'); }
+  if (r.status === 401 || r.status === 203) throw new Error('Azure DevOps rejected the token. Check it hasn’t expired and has Extension Data: Read.');
+  if (!r.ok) throw new Error(`Azure DevOps returned an error (${r.status}).`);
+  const j = await r.json();
+  allLogs = Array.isArray(j) ? j : (j.value || []); loadedAt = Date.now();
+  return allLogs;
+}
+
+async function lookupWorkItems(ids){
+  const need = ids.filter(id => !(id in wiCache));
+  if (!need.length || !$('pat').value.trim()) return;
+  status('Looking up projects and titles…');
+  for (let i = 0; i < need.length; i += 200){
+    try {
+      const r = await fetch(WI_URL, { method:'POST', headers:{ ...auth(), 'Content-Type':'application/json' },
+        body: JSON.stringify({ ids: need.slice(i, i+200), fields:['System.Id','System.TeamProject','System.Title'], errorPolicy:'Omit' }) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      for (const w of (j.value || [])) if (w && w.fields) wiCache[w.id] = { project: w.fields['System.TeamProject'], title: w.fields['System.Title'] };
+    } catch(e) { /* leave blank */ }
+  }
+}
+
+$('go').addEventListener('click', async () => {
+  const typed = $('names').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const from = $('from').value, to = $('to').value;
+  if (!typed.length) return status('Enter at least one name.', true);
+  if (!from || !to || from > to) return status('Choose a valid period (From must be on or before To).', true);
+  ls.set('ts-names', $('names').value);
+  $('go').disabled = true;
+  try {
+    const logs = await loadLogs();
+    const keys = typed.map(norm);
+    const found = {}, rows = [];
+    for (const o of logs){
+      if (!o || !o.user) continue;
+      const u = norm(o.user), k = keys.find(n => u.includes(n));
+      if (k === undefined) continue;
+      found[o.user] = k;
+      const d = String(o.date).slice(0,10);
+      if (d >= from && d <= to) rows.push({ user:o.user, d, h:(+o.minutes||0)/60, wi:o.workItemId });
+    }
+    await lookupWorkItems([...new Set(rows.map(r => r.wi).filter(Boolean))]);
+    render(typed, keys, found, rows, from, to);
+    status('');
+  } catch(e) { status(e.message, true); }
+  finally { $('go').disabled = false; }
+});
+
+function render(typed, keys, found, rows, from, to){
+  const days = []; for (let d = parseDay(from); ymd(d) <= to && days.length < 62; d.setDate(d.getDate()+1)) days.push(ymd(d));
+  // users: every matched account, plus typed names with no match
+  const users = Object.keys(found).sort((a,b) => a.localeCompare(b));
+  typed.forEach((t,i) => { if (!Object.values(found).includes(keys[i])) users.push(t); });
+  const isWk = d => [5,6].includes(parseDay(d).getDay());
+  let html = '<div class="wrap"><table><thead><tr><th>User</th><th>Project</th><th>Work item</th>' +
+    days.map(d => { const x = parseDay(d); return `<th${isWk(d)?' class="wk"':''}>${DOW[x.getDay()]}<small>${x.getDate()} ${MON[x.getMonth()]}</small></th>`; }).join('') +
+    '<th>Total</th></tr></thead><tbody>';
+  const csv = [['User','Project','Work item','Title',...days,'Total']];
+  for (const u of users){
+    const mine = rows.filter(r => r.user === u);
+    const groups = new Map();
+    for (const r of mine){
+      const info = wiCache[r.wi] || {};
+      const key = (info.project || '') + '|' + r.wi;
+      if (!groups.has(key)) groups.set(key, { project: info.project || '—', wi: r.wi, title: info.title || '', days:{}, total:0 });
+      const g = groups.get(key); g.days[r.d] = (g.days[r.d]||0) + r.h; g.total += r.h;
+    }
+    const list = [...groups.values()].sort((a,b) => a.project.localeCompare(b.project) || a.wi - b.wi);
+    const dayTot = {}; let total = 0;
+    list.forEach(g => { days.forEach(d => dayTot[d] = (dayTot[d]||0) + (g.days[d]||0)); total += g.total; });
+    const span = list.length + 1;
+    if (!list.length){
+      html += `<tr><td class="user" rowspan="2">${esc(u)}</td><td class="none" colspan="2">No hours logged in this period</td>${days.map(d => `<td class="h${isWk(d)?' wk':''}">–</td>`).join('')}<td class="tot">0</td></tr>`;
+    }
+    list.forEach((g, i) => {
+      html += '<tr>' + (i === 0 ? `<td class="user" rowspan="${span}">${esc(u)}</td>` : '') +
+        `<td>${esc(g.project)}</td><td class="wi">#${esc(g.wi)}${g.title ? `<small>${esc(g.title)}</small>` : ''}</td>` +
+        days.map(d => `<td class="h${isWk(d)?' wk':''}">${fmt(g.days[d]) || '–'}</td>`).join('') + `<td class="tot">${fmt(g.total)}</td></tr>`;
+      csv.push([u, g.project, g.wi, g.title, ...days.map(d => Math.round((g.days[d]||0)*100)/100), Math.round(g.total*100)/100]);
+    });
+    html += `<tr class="subtotal"><td colspan="2">Total – ${esc(u)}</td>` +
+      days.map(d => `<td class="h${dayTot[d] > 8 ? ' over' : ''}">${fmt(dayTot[d]) || '0'}</td>`).join('') + `<td class="tot">${fmt(total) || '0'}</td></tr>`;
+    csv.push([u, 'TOTAL', '', '', ...days.map(d => Math.round((dayTot[d]||0)*100)/100), Math.round(total*100)/100]);
+  }
+  html += '</tbody></table></div>';
+  $('out').innerHTML = html;
+  lastRows = csv; lastDays = { from, to };
+  $('csv').hidden = false;
+}
+
+$('csv').addEventListener('click', () => {
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; };
+  const blob = new Blob(['\uFEFF' + lastRows.map(r => r.map(q).join(',')).join('\n')], { type:'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `timesheet_${lastDays.from}_to_${lastDays.to}.csv`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+// saved-file fallback
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    let t = String(rd.result).replace(/^\uFEFF/,'').trim();
+    if (t.startsWith('<')) t = new DOMParser().parseFromString(t,'text/html').body.textContent.trim();
+    try { const j = JSON.parse(t); allLogs = Array.isArray(j) ? j : (j.value || []); fromFile = true; $('fileText').textContent = `Loaded ${allLogs.length.toLocaleString()} entries. Now click Generate.`; status(''); }
+    catch(err) { status('That file isn’t readable Time Log data. Save the data page again.', true); }
+  };
+  rd.readAsText(f);
+});
+</script>
+</body>
+</html>
