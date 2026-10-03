@@ -72,7 +72,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem}
 
   <p class="status" id="status"></p>
   <div id="out"></div>
-  <div class="row" style="margin-top:10px"><button id="csv" hidden>Download CSV</button></div>
+  <div class="row" style="margin-top:10px"><button id="csv" hidden>Download Excel</button></div>
 
   <div class="card" style="margin-top:24px">
     <details>
@@ -104,7 +104,7 @@ const today = new Date(), sun = new Date(today.getFullYear(), today.getMonth(), 
 $('from').value = ymd(sun); $('to').value = ymd(new Date(sun.getFullYear(), sun.getMonth(), sun.getDate()+6));
 $('names').value = ls.get('ts-names') || '';
 
-let allLogs = null, wiCache = {}, lastRows = null, lastDays = null;
+let allLogs = null, wiCache = {}, lastRows = null, lastDays = null, lastModel = null;
 const status = (t, err) => { $('status').textContent = t; $('status').classList.toggle('err', !!err); };
 if (ls.get('ts-pat')) { $('pat').value = ls.get('ts-pat'); $('remember').checked = true; }
 $('remember').addEventListener('change', () => ls.set('ts-pat', $('remember').checked ? $('pat').value : null));
@@ -178,6 +178,7 @@ function render(typed, keys, found, rows, from, to){
     days.map(d => { const x = parseDay(d); return `<th${isWk(d)?' class="wk"':''}>${DOW[x.getDay()]}<small>${x.getDate()} ${MON[x.getMonth()]}</small></th>`; }).join('') +
     '<th>Total</th></tr></thead><tbody>';
   const csv = [['User','Project','Work item','Title',...days,'Total']];
+  const model = { days, users: [] };
   for (const u of users){
     const mine = rows.filter(r => r.user === u);
     const groups = new Map();
@@ -191,6 +192,7 @@ function render(typed, keys, found, rows, from, to){
     const dayTot = {}; let total = 0;
     list.forEach(g => { days.forEach(d => dayTot[d] = (dayTot[d]||0) + (g.days[d]||0)); total += g.total; });
     const span = list.length + 1;
+    model.users.push({ name: u, items: list, dayTot, total });
     if (!list.length){
       html += `<tr><td class="user" rowspan="2">${esc(u)}</td><td class="none" colspan="2">No hours logged in this period</td>${days.map(d => `<td class="h${isWk(d)?' wk':''}">–</td>`).join('')}<td class="tot">0</td></tr>`;
     }
@@ -206,16 +208,70 @@ function render(typed, keys, found, rows, from, to){
   }
   html += '</tbody></table></div>';
   $('out').innerHTML = html;
-  lastRows = csv; lastDays = { from, to };
+  lastRows = csv; lastDays = { from, to }; lastModel = model;
   $('csv').hidden = false;
 }
 
-$('csv').addEventListener('click', () => {
+function loadScript(src){ return new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = src; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); }); }
+function saveBlob(blob, name){
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+}
+function saveCsv(){
   const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s; };
-  const blob = new Blob(['\uFEFF' + lastRows.map(r => r.map(q).join(',')).join('\n')], { type:'text/csv' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `timesheet_${lastDays.from}_to_${lastDays.to}.csv`; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  saveBlob(new Blob(['\uFEFF' + lastRows.map(r => r.map(q).join(',')).join('\n')], { type:'text/csv' }), `timesheet_${lastDays.from}_to_${lastDays.to}.csv`);
+}
+async function saveExcel(){
+  if (!window.ExcelJS) await loadScript('https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js');
+  const m = lastModel, days = m.days, nd = days.length, lastCol = 3 + nd + 1;
+  const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Timesheet', { views: [{ state: 'frozen', ySplit: 1, xSplit: 3 }] });
+  const thin = { style: 'thin', color: { argb: 'FFD7DCE4' } }, border = { top: thin, left: thin, bottom: thin, right: thin };
+  const fill = c => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: c } });
+  const HEAD = 'FFEEF2F7', SUB = 'FFEEF2F7', WK = 'FFF0F1F4', OVER = 'FFFBE3DA';
+  const isWk = d => [5,6].includes(parseDay(d).getDay());
+  const numFmt = '[=0]"–";General';
+  ws.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+  ws.columns = [{ width: 22 }, { width: 34 }, { width: 48 }, ...days.map(() => ({ width: 10 })), { width: 10 }];
+  const hdr = ws.addRow(['User', 'Project', 'Work item', ...days.map(d => { const x = parseDay(d); return `${DOW[x.getDay()]}\n${x.getDate()} ${MON[x.getMonth()]}`; }), 'Total']);
+  hdr.height = 32;
+  hdr.eachCell((c, i) => { c.font = { bold: true }; c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.fill = fill(i > 3 && i <= 3 + nd && isWk(days[i-4]) ? WK : HEAD); c.border = border; });
+  for (const u of m.users){
+    const first = ws.rowCount + 1;
+    const items = u.items.length ? u.items : [null];
+    for (const g of items){
+      const r = ws.addRow([u.name, g ? g.project : 'No hours logged in this period', g ? null : '', ...days.map(d => g ? Math.round((g.days[d]||0)*100)/100 : 0), g ? Math.round(g.total*100)/100 : 0]);
+      if (g) r.getCell(3).value = { richText: [{ text: `#${g.wi}`, font: { size: 11 } }, ...(g.title ? [{ text: `\n${g.title}`, font: { size: 9, color: { argb: 'FF5D6979' } } }] : [])] };
+      else ws.mergeCells(r.number, 2, r.number, 3);
+      r.height = g && g.title ? 32 : 20;
+      r.eachCell({ includeEmpty: true }, (c, i) => {
+        c.border = border; c.alignment = { vertical: 'middle', wrapText: i === 3, horizontal: i > 3 ? 'center' : 'left' };
+        if (i > 3) c.numFmt = numFmt;
+        if (i > 3 && i <= 3 + nd && isWk(days[i-4])) c.fill = fill(WK);
+        if (i === lastCol) { c.font = { bold: true }; c.alignment = { vertical: 'middle', horizontal: 'right' }; }
+        if (!g && i === 2) c.font = { italic: true, color: { argb: 'FF5D6979' } };
+      });
+    }
+    const t = ws.addRow(['', `Total – ${u.name}`, '', ...days.map(d => Math.round((u.dayTot[d]||0)*100)/100), Math.round(u.total*100)/100]);
+    ws.mergeCells(t.number, 2, t.number, 3);
+    t.height = 20;
+    t.eachCell({ includeEmpty: true }, (c, i) => {
+      if (i === 1) { c.border = border; return; }
+      c.font = { bold: true }; c.fill = fill(SUB); c.border = border;
+      c.alignment = { vertical: 'middle', horizontal: i > 3 ? (i === lastCol ? 'right' : 'center') : 'left' };
+      if (i > 3) c.numFmt = 'General';
+      const d = days[i-4]; if (i > 3 && i <= 3 + nd && (u.dayTot[d]||0) > 8) { c.fill = fill(OVER); c.font = { bold: true, color: { argb: 'FFA8431A' } }; }
+    });
+    ws.mergeCells(first, 1, t.number, 1);
+    const uc = ws.getCell(first, 1); uc.value = u.name; uc.font = { bold: true }; uc.alignment = { vertical: 'top', horizontal: 'left' };
+  }
+  const buf = await wb.xlsx.writeBuffer();
+  saveBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `timesheet_${lastDays.from}_to_${lastDays.to}.xlsx`);
+}
+$('csv').addEventListener('click', async () => {
+  const b = $('csv'); b.disabled = true;
+  try { await saveExcel(); }
+  catch(e) { status('The Excel file couldn’t be created, so a CSV was downloaded instead.', true); saveCsv(); }
+  finally { b.disabled = false; }
 });
 
 // saved-file fallback
